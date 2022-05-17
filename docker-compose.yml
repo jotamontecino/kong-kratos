@@ -1,0 +1,136 @@
+version: '3.2'
+services:
+  kong:
+    image: kong
+    ports:
+      - 0.0.0.0:8000:8000
+      - 8443:8443
+      - 8001:8001
+      - 8444:8444
+    environment:
+      - "KONG_PROXY_ACCESS_LOG=/dev/stdout"
+      - "KONG_ADMIN_ACCESS_LOG=/dev/stdout"
+      - "KONG_PROXY_ERROR_LOG=/dev/stderr"
+      - "KONG_ADMIN_ERROR_LOG=/dev/stderr"
+      - "KONG_ADMIN_LISTEN=0.0.0.0:8001, 0.0.0.0:8444 ssl"
+      - "KONG_DATABASE=postgres"
+      - "KONG_PG_HOST=kong-db"
+      - "KONG_PG_USER=kong"
+      - "KONG_PG_PASSWORD=kong"
+      - "KONG_CASSANDRA_CONTACT_POINTS=kong-db"
+    depends_on:
+      - "kong-migrate"
+    restart: "on-failure:3"
+
+  kong-migrate:
+    image: kong
+    depends_on:
+      - "kong-db"
+    environment:
+      KONG_DATABASE: "postgres"
+      KONG_PG_HOST: "kong-db"
+      KONG_PG_USER: "kong"
+      KONG_PG_PASSWORD: "kong"
+      KONG_CASSANDRA_CONTACT_POINTS: "kong-db"
+    command: "kong migrations bootstrap"
+    restart: "on-failure:3"
+
+  kong-db:
+    image: "postgres:9.6"
+    environment:
+      POSTGRES_USER: "kong"
+      POSTGRES_PASSWORD: "kong"
+      POSTGRES_DB: "kong"
+    volumes:
+      - ./kong_data:/var/lib/postgresql/data
+## Konga => Kong GUI
+  konga:
+    image: pantsel/konga
+    ports:
+      - 1337:1337
+    environment:
+      - "DB_ADAPTER=postgres"
+      - "DB_HOST=konga-db"
+      - "DB_USER=konga"
+      - "DB_PASSWORD=konga"
+    restart: "on-failure:6"
+    depends_on:
+      - konga-db
+
+  konga-db:
+    image: "postgres:9.6"
+    environment:
+      POSTGRES_USER: "konga"
+      POSTGRES_PASSWORD: "konga"
+      POSTGRES_DB: "konga"
+    volumes:
+      - ./konga_data:/var/lib/postgresql/data
+
+## Kratos
+  kratos-migrate:
+    image: oryd/kratos:v0.8.0-alpha.3-sqlite
+    environment:
+      - DSN=sqlite:///var/lib/sqlite/db.sqlite?_fk=true&mode=rwc
+    volumes:
+      - type: volume
+        source: kratos-sqlite
+        target: /var/lib/sqlite
+        read_only: false
+      - type: bind
+        source: ./config/kratos
+        target: /home/ory/kratos
+    command: -c /home/ory/kratos/kratos_config.yml migrate sql -e --yes
+    restart: on-failure
+    networks:
+      - intranet
+
+  kratos-selfservice-ui-node:
+    image: oryd/kratos-selfservice-ui-node:v0.8.0-alpha.3
+    ports:
+      - '4455:4455'
+    environment:
+      - KRATOS_PUBLIC_URL=http://kratos:4433/
+      - KRATOS_BROWSER_URL=http://127.0.0.1:4433/
+      - PORT=4455
+      - SECURITY_MODE=
+    networks:
+      - intranet
+    restart: on-failure
+
+  kratos:
+    depends_on:
+      - kratos-migrate
+    image: oryd/kratos:v0.8.0-alpha.3-sqlite
+    ports:
+      - '4433:4433' # public
+      - '4434:4434' # admin
+    restart: unless-stopped
+    environment:
+      - DSN=sqlite:///var/lib/sqlite/db.sqlite?_fk=true
+      - LOG_LEVEL=trace
+    command: serve -c /home/ory//kratos/kratos_config.yml --dev --watch-courier
+    volumes:
+      - type: volume
+        source: kratos-sqlite
+        target: /var/lib/sqlite
+        read_only: false
+      - type: bind
+        source: ./config/kratos
+        target: /home/ory/kratos
+    networks:
+      - intranet
+
+  mailslurper:
+    image: oryd/mailslurper:latest-smtps
+    ports:
+      - '4436:4436'
+      - '4437:4437'
+    networks:
+      - intranet
+
+
+networks:
+  intranet:
+
+volumes:
+  kratos-sqlite:
